@@ -3,6 +3,8 @@ package com.imagepicker;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
 import android.content.Intent;
+import android.content.ClipData;
+import android.content.ClipData.Item;
 import android.net.Uri;
 import android.os.Environment;
 import android.provider.MediaStore;
@@ -24,6 +26,7 @@ import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.bridge.WritableArray;
 
 import java.io.File;
 import java.io.IOException;
@@ -60,6 +63,7 @@ public class ImagePickerModule extends ReactContextBaseJavaModule {
   private int quality = 100;
   private int angle = 0;
   private Boolean forceAngle = false;
+  private Boolean multiple = false;
   WritableMap response;
 
   public ImagePickerModule(ReactApplicationContext reactContext, Activity mainActivity) {
@@ -249,9 +253,21 @@ public class ImagePickerModule extends ReactContextBaseJavaModule {
         forceAngle = true;
         angle = options.getInt("angle");
     }
+    if (options.hasKey("multiple")) {
+        multiple = options.getBoolean("multiple");
+    }
 
-    Intent libraryIntent = new Intent(Intent.ACTION_PICK,
-        android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+    Intent libraryIntent;
+    if (multiple) {
+        libraryIntent = new Intent(Intent.ACTION_GET_CONTENT,
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+        libraryIntent.setType("image/*");
+        libraryIntent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+    }
+    else {
+        libraryIntent = new Intent(Intent.ACTION_PICK,
+            android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI);
+    }
 
     if (libraryIntent.resolveActivity(mMainActivity.getPackageManager()) == null) {
         response.putString("error", "Cannot launch photo library");
@@ -284,6 +300,7 @@ public class ImagePickerModule extends ReactContextBaseJavaModule {
     }
 
     Uri uri;
+    WritableArray images = null;
     switch (requestCode)
     {
         case REQUEST_LAUNCH_CAMERA:
@@ -293,7 +310,17 @@ public class ImagePickerModule extends ReactContextBaseJavaModule {
             uri = mCropImagedUri;
             break;
         default:
-            uri = data.getData();
+            ClipData clip = data.getClipData();
+            if (clip != null) {
+              uri = clip.getItemAt(0).getUri();
+              images = Arguments.createArray();
+              for (int i = 0; i < clip.getItemCount(); i++) {
+                images.pushMap(getImageFromUri(clip.getItemAt(i).getUri()));
+              }
+            }
+            else {
+              uri = data.getData();
+            }
     }
 
     if (requestCode != REQUEST_IMAGE_CROPPING && allowEditing == true) {
@@ -334,6 +361,15 @@ public class ImagePickerModule extends ReactContextBaseJavaModule {
         return;
     }
 
+    response = getImageFromUri(uri);
+    if (images != null) {
+      response.putArray("images", images);
+    }
+    mCallback.invoke(response);
+  }
+
+  private WritableMap getImageFromUri(Uri uri) {
+    WritableMap obj = Arguments.createMap();
     String realPath = getRealPathFromURI(uri);
     boolean isUrl = false;
 
@@ -353,10 +389,9 @@ public class ImagePickerModule extends ReactContextBaseJavaModule {
         uri = Uri.fromFile(file);
       }
       catch(Exception e) {
-        response.putString("error", "Could not read photo");
-        response.putString("uri", uri.toString());
-        mCallback.invoke(response);
-        return;
+        obj.putString("error", "Could not read photo");
+        obj.putString("uri", uri.toString());
+        return obj;
       }
     }
 
@@ -378,12 +413,11 @@ public class ImagePickerModule extends ReactContextBaseJavaModule {
                 CurrentAngle = 180;
                 break;
         }
-        response.putBoolean("isVertical", isVertical);
+        obj.putBoolean("isVertical", isVertical);
     } catch (IOException e) {
         e.printStackTrace();
-        response.putString("error", e.getMessage());
-        mCallback.invoke(response);
-        return;
+        obj.putString("error", e.getMessage());
+        return obj;
     }
 
     BitmapFactory.Options options = new BitmapFactory.Options();
@@ -396,24 +430,24 @@ public class ImagePickerModule extends ReactContextBaseJavaModule {
     if (((initialWidth < maxWidth && maxWidth > 0) || maxWidth == 0)
             && ((initialHeight < maxHeight && maxHeight > 0) || maxHeight == 0)
             && quality == 100 && (!forceAngle || (forceAngle && CurrentAngle == angle))) {
-        response.putInt("width", initialWidth);
-        response.putInt("height", initialHeight);
+        obj.putInt("width", initialWidth);
+        obj.putInt("height", initialHeight);
     } else {
         File resized = getResizedImage(getRealPathFromURI(uri), initialWidth, initialHeight);
         realPath = resized.getAbsolutePath();
         uri = Uri.fromFile(resized);
         photo = BitmapFactory.decodeFile(realPath, options);
-        response.putInt("width", options.outWidth);
-        response.putInt("height", options.outHeight);
+        obj.putInt("width", options.outWidth);
+        obj.putInt("height", options.outHeight);
     }
 
-    response.putString("uri", uri.toString());
-    response.putString("path", realPath);
+    obj.putString("uri", uri.toString());
+    obj.putString("path", realPath);
 
     if (!noData) {
-        response.putString("data", getBase64StringFromFile(realPath));
+        obj.putString("data", getBase64StringFromFile(realPath));
     }
-    mCallback.invoke(response);
+    return obj;
   }
 
   private String getRealPathFromURI(Uri uri) {
